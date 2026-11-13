@@ -1,0 +1,168 @@
+name: Build FlyReset
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Создать проект FlyReset
+        run: |
+          mkdir -p flyreset/src/main/java/ru/eclips/flyreset
+          mkdir -p flyreset/src/main/resources
+
+          cat > flyreset/pom.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+
+            <groupId>ru.eclips</groupId>
+            <artifactId>FlyReset</artifactId>
+            <version>1.0.0</version>
+            <packaging>jar</packaging>
+
+            <properties>
+              <maven.compiler.source>17</maven.compiler.source>
+              <maven.compiler.target>17</maven.compiler.target>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+
+            <repositories>
+              <repository>
+                <id>lanink</id>
+                <url>https://repo.lanink.cn/repository/maven-public/</url>
+              </repository>
+            </repositories>
+
+            <dependencies>
+              <dependency>
+                <groupId>cn.nukkit</groupId>
+                <artifactId>Nukkit</artifactId>
+                <version>MOT-SNAPSHOT</version>
+                <scope>provided</scope>
+              </dependency>
+            </dependencies>
+
+            <build>
+              <finalName>FlyReset</finalName>
+            </build>
+          </project>
+          EOF
+
+          cat > flyreset/src/main/resources/plugin.yml << 'EOF'
+          name: FlyReset
+          main: ru.eclips.flyreset.FlyReset
+          version: 1.0.0
+          api: ["1.0.0"]
+          author: Eclips
+          description: Отключает fly при выходе игрока и команда /msg от имени сервера
+          permissions:
+            flyreset.msg:
+              description: Использование /msg
+              default: op
+          EOF
+
+          cat > flyreset/src/main/resources/config.yml << 'EOF'
+          # Формат сообщения /msg. {message} - текст. Цвета через &
+          msg-format: "&6[Eclips] &f{message}"
+          EOF
+
+          cat > flyreset/src/main/java/ru/eclips/flyreset/FlyReset.java << 'EOF'
+          package ru.eclips.flyreset;
+
+          import cn.nukkit.AdventureSettings;
+          import cn.nukkit.Player;
+          import cn.nukkit.event.EventHandler;
+          import cn.nukkit.event.Listener;
+          import cn.nukkit.event.player.PlayerQuitEvent;
+          import cn.nukkit.plugin.PluginBase;
+
+          public class FlyReset extends PluginBase implements Listener {
+
+              @Override
+              public void onEnable() {
+                  saveDefaultConfig();
+                  getServer().getPluginManager().registerEvents(this, this);
+
+                  // убираем ванильный /msg (алиас /tell), чтобы он не мешал
+                  getServer().getCommandMap().getCommands().remove("msg");
+                  getServer().getCommandMap().register("flyreset", new MsgCommand(this));
+
+                  getLogger().info("FlyReset включен");
+              }
+
+              public String getMsgFormat() {
+                  return getConfig().getString("msg-format", "&6[Eclips] &f{message}");
+              }
+
+              @EventHandler
+              public void onQuit(PlayerQuitEvent event) {
+                  Player player = event.getPlayer();
+                  int gm = player.getGamemode();
+                  // в креативе и наблюдателе полёт положен по режиму, не трогаем
+                  if (gm == 0 || gm == 2) {
+                      AdventureSettings settings = player.getAdventureSettings();
+                      settings.set(AdventureSettings.Type.ALLOW_FLIGHT, false);
+                      settings.set(AdventureSettings.Type.FLYING, false);
+                      settings.update();
+                  }
+              }
+          }
+          EOF
+
+          cat > flyreset/src/main/java/ru/eclips/flyreset/MsgCommand.java << 'EOF'
+          package ru.eclips.flyreset;
+
+          import cn.nukkit.command.Command;
+          import cn.nukkit.command.CommandSender;
+          import cn.nukkit.utils.TextFormat;
+
+          public class MsgCommand extends Command {
+
+              private final FlyReset plugin;
+
+              public MsgCommand(FlyReset plugin) {
+                  super("msg", "Написать сообщение от имени сервера", "/msg <сообщение>");
+                  this.plugin = plugin;
+                  this.setPermission("flyreset.msg");
+              }
+
+              @Override
+              public boolean execute(CommandSender sender, String label, String[] args) {
+                  if (!this.testPermission(sender)) {
+                      return false;
+                  }
+                  if (args.length == 0) {
+                      sender.sendMessage(TextFormat.RED + "Использование: /msg <сообщение>");
+                      return false;
+                  }
+                  String text = String.join(" ", args);
+                  String out = TextFormat.colorize('&', plugin.getMsgFormat().replace("{message}", text));
+                  plugin.getServer().broadcastMessage(out);
+                  return true;
+              }
+          }
+          EOF
+
+      - name: Сборка Maven
+        run: mvn -B -f flyreset/pom.xml clean package
+
+      - name: Загрузить jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlyReset
+          path: flyreset/target/FlyReset.jar
